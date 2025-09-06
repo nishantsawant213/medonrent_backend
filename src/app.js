@@ -6,7 +6,7 @@ const app = express();
 
 
 app.use(cors({
-    origin: "http://localhost:5173", // Specify the frontend's URL
+    origin: "http://103.194.228.99:5173", // Specify the frontend's URL
     credentials: true,  // Allow credentials (cookies, authorization headers, etc.)
     methods: "GET,HEAD,PUT,PATCH,POST,DELETE",
     allowedHeaders: "Content-Type, Authorization"

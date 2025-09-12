@@ -52,7 +52,7 @@ const addRentSession = asyncHandler(async (req, res) => {
     }
 
     // Set paymentStatus based on paymentType and paymentDate
-    
+
     // Parse billing if it's a JSON string (from form-data)
     if (typeof billing === 'string') {
         try {
@@ -61,7 +61,7 @@ const addRentSession = asyncHandler(async (req, res) => {
             return res.status(400).json(new ApiError(400, "Invalid billing data format."));
         }
     }
-    
+
     // Parse report if it's a JSON string (from form-data)
     if (typeof report === 'string') {
         try {
@@ -71,7 +71,7 @@ const addRentSession = asyncHandler(async (req, res) => {
             report = null;
         }
     }
-    
+
     if (billing && billing.paymentType && billing.paymentDate) {
         billing.paymentStatus = "paid";
     }
@@ -181,7 +181,18 @@ const addRentSession = asyncHandler(async (req, res) => {
 
 const updateRentSession = asyncHandler(async (req, res) => {
     const { id } = req.params;
+
+
+    // Find existing session first
+    const existingSession = await RentSession.findById(id);
+    if (!existingSession) {
+        return res.status(404).json(new ApiError(404, "Rent session not found"));
+    }
+
     let updateData = { ...req.body };
+
+    console.log("data to udpate");
+    console.log(updateData);
 
     // Trim whitespace from string fields, especially IDs
     if (updateData.device) updateData.device = updateData.device.trim();
@@ -191,6 +202,54 @@ const updateRentSession = asyncHandler(async (req, res) => {
     if (updateData.patientFeedback) updateData.patientFeedback = updateData.patientFeedback?.trim();
     if (updateData.remarks) updateData.remarks = updateData.remarks?.trim();
     if (updateData.cancelReason) updateData.cancelReason = updateData.cancelReason?.trim();
+
+
+    if (req.files) {
+        console.log('Files received:', Object.keys(req.files));
+        if (req.files.reportFile && req.files.reportFile[0]) {
+            console.log('Report file path:', req.files.reportFile[0].path);
+            updateData.report = {
+                path: req.files.reportFile[0].path,
+                generatedDate: new Date()
+            };
+        }
+        if (req.files.patientConsentFile && req.files.patientConsentFile[0]) {
+            console.log('Consent file path:', req.files.patientConsentFile[0].path);
+            updateData.patientConsentFilePath = req.files.patientConsentFile[0].path;
+        }
+    } else {
+        console.log('No files received in request');
+    }
+
+    // Validate required fields if patient is being updated
+    if (updateData.patient && !updateData.patient.trim()) {
+        return res.status(400).json(new ApiError(400, "Patient ID is required."));
+    }
+
+    // Validate billing if it's being updated
+    if (updateData.billing && (!updateData.billing?.totalCharges || !updateData.billing?.paymentType)) {
+        return res.status(400).json(new ApiError(400, "Billing must include totalCharges and paymentType."));
+    }
+
+    // Validate patient if being updated
+    if (updateData.patient) {
+        const existingPatient = await Patient.findById(updateData.patient);
+        if (!existingPatient) {
+            return res.status(404).json(new ApiError(404, "Patient not found."));
+        }
+    }
+
+    // Validate device if being updated
+    if (updateData.device) {
+        const existingDevice = await Device.findById(updateData.device);
+        if (!existingDevice) {
+            return res.status(404).json(new ApiError(404, "Device not found."));
+        }
+
+        if (existingDevice.status !== "available") {
+            return res.status(400).json(new ApiError(400, `Device is not available (current status: ${existingDevice.status}).`));
+        }
+    }
 
     // Calculate totalHours based on dates and times if they are being updated
     const dateFrom = updateData.dateFrom || existingSession.dateFrom;
@@ -203,7 +262,10 @@ const updateRentSession = asyncHandler(async (req, res) => {
             const startDateTime = new Date(`${dateFrom}T${installTime}`);
             const endDateTime = new Date(`${dateTo}T${uninstallTime}`);
             const diffMs = endDateTime - startDateTime;
-            updateData.totalHours = Math.max(0, diffMs / (1000 * 60 * 60)); // Convert to hours
+            const calculatedHours = Math.max(0, diffMs / (1000 * 60 * 60)); // Convert to hours
+            if (!isNaN(calculatedHours) && isFinite(calculatedHours)) {
+                updateData.totalHours = calculatedHours;
+            }
         } catch (error) {
             // If calculation fails, don't update totalHours
         }
@@ -218,6 +280,23 @@ const updateRentSession = asyncHandler(async (req, res) => {
         // If billing is not being updated but existing billing has payment info, ensure status is set
         updateData.billing = { ...existingSession.billing };
         updateData.billing.paymentStatus = "paid";
+
+        // Ensure number fields are properly typed when copying existing billing
+        if (updateData.billing.totalCharges !== undefined) {
+            updateData.billing.totalCharges = Number(updateData.billing.totalCharges);
+        }
+        if (updateData.billing.discountAmount !== undefined) {
+            updateData.billing.discountAmount = Number(updateData.billing.discountAmount) || 0;
+        }
+        if (updateData.billing.doctorCommission !== undefined) {
+            updateData.billing.doctorCommission = Number(updateData.billing.doctorCommission) || 0;
+        }
+        if (updateData.billing.gst !== undefined) {
+            updateData.billing.gst = Number(updateData.billing.gst) || 0;
+        }
+        if (updateData.billing.finalAmountPaid !== undefined) {
+            updateData.billing.finalAmountPaid = Number(updateData.billing.finalAmountPaid);
+        }
     }
 
     // Parse billing if it's a JSON string (from form-data)
@@ -226,6 +305,25 @@ const updateRentSession = asyncHandler(async (req, res) => {
             updateData.billing = JSON.parse(updateData.billing);
         } catch (error) {
             return res.status(400).json(new ApiError(400, "Invalid billing data format."));
+        }
+    }
+
+    // Ensure billing number fields are properly typed
+    if (updateData.billing) {
+        if (updateData.billing.totalCharges !== undefined) {
+            updateData.billing.totalCharges = Number(updateData.billing.totalCharges);
+        }
+        if (updateData.billing.discountAmount !== undefined) {
+            updateData.billing.discountAmount = Number(updateData.billing.discountAmount) || 0;
+        }
+        if (updateData.billing.doctorCommission !== undefined) {
+            updateData.billing.doctorCommission = Number(updateData.billing.doctorCommission) || 0;
+        }
+        if (updateData.billing.gst !== undefined) {
+            updateData.billing.gst = Number(updateData.billing.gst) || 0;
+        }
+        if (updateData.billing.finalAmountPaid !== undefined) {
+            updateData.billing.finalAmountPaid = Number(updateData.billing.finalAmountPaid);
         }
     }
 
@@ -241,21 +339,20 @@ const updateRentSession = asyncHandler(async (req, res) => {
 
     // Handle file uploads
     if (req.files) {
+        console.log('Files received:', Object.keys(req.files));
         if (req.files.reportFile && req.files.reportFile[0]) {
+            console.log('Report file path:', req.files.reportFile[0].path);
             updateData.report = {
                 path: req.files.reportFile[0].path,
                 generatedDate: new Date()
             };
         }
         if (req.files.patientConsentFile && req.files.patientConsentFile[0]) {
+            console.log('Consent file path:', req.files.patientConsentFile[0].path);
             updateData.patientConsentFilePath = req.files.patientConsentFile[0].path;
         }
-    }
-
-    // Find existing session
-    const existingSession = await RentSession.findById(id);
-    if (!existingSession) {
-        return res.status(404).json(new ApiError(404, "Rent session not found"));
+    } else {
+        console.log('No files received in request');
     }
 
     // Check for duplicate if device, patient, or dates are being updated
@@ -301,7 +398,7 @@ const updateRentSession = asyncHandler(async (req, res) => {
         updateData.updatedBy = req.user._id;
     }
 
-    const restrictedFields = ['patient', 'createdBy'];
+    const restrictedFields = ['createdBy'];
     for (const field of restrictedFields) {
         if (field in updateData) {
             delete updateData[field]; // Remove them if present in req.body
@@ -309,15 +406,29 @@ const updateRentSession = asyncHandler(async (req, res) => {
     }
 
     // Perform update
-    const updatedSession = await RentSession.findByIdAndUpdate(
-        id,
-        { $set: updateData },
-        { new: true, runValidators: true }
-    );
+    console.log('Update data being saved:', JSON.stringify(updateData, null, 2));
+    try {
+        const updatedSession = await RentSession.findByIdAndUpdate(
+            id,
+            { $set: updateData },
+            { new: true, runValidators: true }
+        );
 
-    return res
-        .status(200)
-        .json(new ApiResponse(200, updatedSession, "Rent session updated successfully"));
+        console.log('Updated session result:', updatedSession ? 'Success' : 'Failed');
+        if (updatedSession) {
+            console.log('Report path in updated session:', updatedSession.report?.path);
+            console.log('Consent file path in updated session:', updatedSession.patientConsentFilePath);
+        } else {
+            console.log('No session returned from update');
+        }
+
+        return res
+            .status(200)
+            .json(new ApiResponse(200, updatedSession, "Rent session updated successfully"));
+    } catch (dbError) {
+        console.error('Database update error:', dbError);
+        return res.status(500).json(new ApiError(500, "Failed to update rent session"));
+    }
 });
 
 const deleteRentSession = asyncHandler(async (req, res) => {
@@ -448,8 +559,8 @@ const generateInvoice = asyncHandler(async (req, res) => {
         doc.text(`GST: ₹${rentSession.billing.gst || 0}`);
 
         const finalAmount = (rentSession.billing.totalCharges || 0) -
-                          (rentSession.billing.discountAmount || 0) +
-                          (rentSession.billing.gst || 0);
+            (rentSession.billing.discountAmount || 0) +
+            (rentSession.billing.gst || 0);
 
         doc.text(`Final Amount: ₹${finalAmount}`);
         doc.text(`Payment Type: ${rentSession.billing.paymentType || 'N/A'}`);
